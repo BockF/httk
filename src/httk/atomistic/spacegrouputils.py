@@ -610,19 +610,19 @@ def trivial_symmetry_reduce(coordgroups):
     """
     # TODO: Actually implement, instead of this placeholder that just gives up and returns P 1
 
-    symops = []
-    symopvs = []
-    for symop in all_symops:
-        symopv = FracVector.create(symop)
-        if check_symop(coordgroups, symopv):
-            symops += [all_symops[symop]]
-            symopvs += [symopv]
+    #symops = []
+    #symopvs = []
+    #for symop in all_symops:
+    #    symopv = FracVector.create(symop)
+    #    if check_symop(coordgroups, symopv):
+    #        symops += [all_symops[symop]]
+    #        symopvs += [symopv]
 
-    shash = symopshash(symops)
-    if shash in symops_hash_index:
-        hall_symbol = symops_hash_index[shash]
-        rc_reduced_coordgroups, wyckoff_symbols, multiplicities = reduce_by_symops(coordgroups, symopvs, hall_symbol)
-        return rc_reduced_coordgroups, hall_symbol, wyckoff_symbols, multiplicities
+    #shash = symopshash(symops)
+    #if shash in symops_hash_index:
+    #    hall_symbol = symops_hash_index[shash]
+    #    rc_reduced_coordgroups, wyckoff_symbols, multiplicities = reduce_by_symops(coordgroups, symopvs, hall_symbol)
+    #    return rc_reduced_coordgroups, hall_symbol, wyckoff_symbols, multiplicities
 
     rc_reduced_coordgroups = coordgroups
     hall_symbol = 'P 1'
