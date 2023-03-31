@@ -18,6 +18,8 @@
 import os, shutil, math, re, bz2, subprocess
 
 import httk
+
+from datetime import datetime
 from httk import config
 from httk.core.template import apply_templates
 from httk.atomistic.data import periodictable
@@ -27,8 +29,6 @@ from httk.core.basic import mkdir_p, micro_pyawk
 from httk.atomistic import Structure
 from httk.atomistic.structureutils import cartesian_to_reduced
 from httk.task.reader import read_manifest
-from httk.atomistic.results import Result_TotalEnergyResult
-from httk.core import Computation, Code
 from httk.core.crypto import hexhash_str
 
 
@@ -587,7 +587,7 @@ def generate_result(path):
 
     '''Converts calculation in the defined path into simple
     httk relaxed cell result object.'''
-
+    from httk.atomistic.results import Result_TotalEnergyResult
     struct = None
 
     for filename in os.listdir(path):
