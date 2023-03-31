@@ -15,7 +15,7 @@
 #    You should have received a copy of the GNU Affero General Public License
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os, shutil, math
+import os, shutil, math, re, bz2, subprocess
 
 import httk
 from httk import config
@@ -26,6 +26,10 @@ from httk.core import *
 from httk.core.basic import mkdir_p, micro_pyawk
 from httk.atomistic import Structure
 from httk.atomistic.structureutils import cartesian_to_reduced
+from httk.task.reader import read_manifest
+from httk.atomistic.results import Result_TotalEnergyResult
+from httk.core import Computation, Code
+from httk.core.crypto import hexhash_str
 
 
 def get_pseudopotential(species, poscarspath=None):
@@ -439,3 +443,211 @@ class OutcarReader():
 
 def read_outcar(ioa):
     return OutcarReader(ioa)
+
+
+def clean_and_compress(path, remove = []):
+
+    httk_path = '/'.join(httk.__path__[0].split('/')[:-2])
+    vasptools = os.path.join(httk_path, 'Execution/tasks/vasp/vasptools.sh')
+    task_api = os.path.join(httk_path, 'Execution/tasks/ht_tasks_api.sh')
+
+    bashscript = ['#!/bin/bash',
+        'source ' +  vasptools + '; VASP_CLEAN_OUTCAR',
+        'source ' + task_api + '; HT_TASK_COMPRESS']
+
+    home = os.getcwd()
+    os.chdir(os.path.join(home, path))
+    current_dir = os.getcwd()
+
+    for filename in remove:
+        if os.path.exists(os.path.join(current_dir, filename)):
+            os.system(f'rm {filename}')
+
+    if os.path.exists(os.path.join(current_dir, 'OUTCAR')):
+
+        with open('clean.sh', 'w') as f:
+            f.write('\n'.join(bashscript))
+
+
+        os.system('chmod +x clean.sh')
+        subprocess.run(os.path.join(current_dir,'clean.sh'))
+
+        try:
+            os.system('rm clean.sh.bz2')
+            os.system('rm OUTCAR.bz2')
+        except:
+            pass
+
+    os.chdir(home)
+    return 0
+
+
+def generate_computation(path):
+
+    '''Generates httk Computation object from non-httk VASP calculation.
+    Needs further generalization to include QE, FHI Aims, etc....'''
+
+    for filename in os.listdir(path):
+        if re.search('OUTCAR', os.path.join(path, filename)) is not None:
+            info = parse_outcar(os.path.join(path, filename))
+
+    (manifest_hash, signatures, project_key, keys) = read_manifest(os.path.join(path, 'ht.manifest.bz2'))
+
+    computation = Computation.create(computation_date = ' '.join([info['Date'], info['Time']]),
+            description = None,
+            code = Code(info['Code'], info['Version']),
+            manifest_hash = manifest_hash,
+            signatures = signatures,
+            keys = keys,
+            relpath = path,
+            project_counter = 0,
+            added_date = datetime.now())
+
+
+    for key in info.keys():
+        computation.add_tag(key, str(info[key]))
+
+    return computation
+
+
+def parse_outcar(path):
+
+    '''Parse the OUTCAR file for all important information about the
+    non-httk calculation. Returns filled dictionary with information
+    required for reproduction of results.'''
+
+    calc_info = {'Code': None,
+            'Version': None,
+            'Build': None,
+            'ENCUT': None,
+            'NKPTS': None,
+            'XC': None,
+            'Potentials': [],
+            'Date': None,
+            'Time': None,
+            'Elapsed': None,
+            'System': None,
+            'Nodes': None,
+            'Cores': None}
+
+    system_cpn = {'Lumi': 128,
+            'Dardel': 128,
+            'Tetralith': 32,
+            'Sigma': 32}
+
+    with bz2.open(path, 'rt') as f:
+        for text in f:
+            line = text.rstrip('\n')
+            if not None in calc_info.values():
+                break
+            if calc_info['Code'] is None:
+                if re.search('vasp\.\d\.\d\.\d\S+', line) is not None:
+                    data = line.split()[0].split('.')
+                    if data[0] == 'vasp':
+                        calc_info['Code'] = 'VASP'
+                        calc_info['Version'] =  '.'.join(data[1:4])
+                        calc_info['Build'] = data[-1]
+            if re.search('POTCAR\S+', line) is not None:
+                pot = ' '.join(line.split()[-2:])
+                if not pot in calc_info['Potentials']:
+                    calc_info['Potentials'].append(pot)
+            if calc_info['System'] is None:
+                if re.search('executed on', line) is not None:
+                    data = line.split()
+                    if 'LUMI' in data[2]:
+                        calc_info['System'] = 'Lumi'
+                    elif 'TETRALITH' in data[2]:
+                        calc_info['System'] = 'Tetralith'
+                    else:
+                        calc_info['System'] = data[2]
+                    calc_info['Date'] = data[4]
+                    calc_info['Time'] = data[-1]
+            if calc_info['XC'] is None:
+                if re.search('LEXCH', line) is not None:
+                    calc_info['XC'] = line.split()[-1]
+            if calc_info['Cores'] is None:
+                if re.search('running on', line) is not None:
+                    calc_info['Cores'] = int(line.split()[2])
+            if calc_info['ENCUT'] is None:
+                if re.search('ENCUT', line) is not None:
+                    calc_info['ENCUT'] = float(line.split()[2])
+            if calc_info['NKPTS'] is None:
+                if re.search('NKPTS', line) is not None:
+                    calc_info['NKPTS'] = int(line.split()[3])
+            if calc_info['Elapsed'] is None:
+                if re.search('Elapsed time', line) is not None:
+                    calc_info['Elapsed'] = float(line.split()[-1])
+            if not calc_info['Cores'] is None and not calc_info['System'] is None:
+                calc_info['Nodes'] = int(calc_info['Cores']/system_cpn[calc_info['System']])
+
+    return calc_info
+
+
+def generate_result(path):
+
+    '''Converts calculation in the defined path into simple
+    httk relaxed cell result object.'''
+
+    struct = None
+
+    for filename in os.listdir(path):
+        if re.search('OUTCAR', filename) is not None:
+            outcar = httk.iface.vasp_if.read_outcar(os.path.join(path, filename))
+            final_energy = float(outcar.final_energy)
+        if re.search('CONTCAR', filename) is not None:
+            struct = httk.iface.vasp_if.poscar_to_structure(os.path.join(path, filename), included_decimals = 5)
+
+    if struct == None:
+        # If no CONTCAR file is found, try to load POSCAR instead.
+        # If this fails again, no result object is returned.
+        try:
+            httk.iface.vasp_if.poscar_to_structure(os.path.join(path, 'POSCAR'), included_decimals = 5)
+        except Exception as e:
+            print(e)
+            return None
+
+    computation = generate_computation(path)
+
+    return Result_TotalEnergyResult(
+            computation = computation,
+            structure = struct,
+            total_energy = final_energy)
+
+
+def httkify(path, remove = [], keypath = None):
+
+    '''Takes non-httk VASP calculation and turns it into httk-like object, cleaning and compressing
+    the running directory. Returns default TotalEnergyResult. To fully work, the {path} need to lead to
+    a directory which contains a valid VASP OUTCAR, but files such as KPOINTS, INCAR, etc. may be kept
+    for sake of traceability. The {remove} variable defines a list of files to delete from the target
+    directory.'''
+
+    if keypath is None:
+
+        # If no keypath specified, try standard path 'ht.project/keys'
+        try:
+            sk, pk = httk.core.crypto.read_keys('ht.project/keys')
+        except:
+            print(f'Please specify keypath for conversion to httk-like object, or consider turning this directory into a httk project.')
+            exit()
+
+    else:
+
+        # Workflow to get clean and compress calculation, and create manifest and httk-like object
+        clean_and_compress(path, remove = remove)
+        with bz2.open(os.path.join(path, 'ht.manifest.bz2'), 'wt') as manifest_file:
+
+            sk, pk = httk.core.crypto.read_keys(keypath)
+            print(f'Generating manifest for {path}, this may take some time!')
+            httk.core.crypto.manifest_dir(
+                basedir = path,
+                manifestfile = manifest_file,
+                excludespath = '',
+                keydir = keypath,
+                sk = sk,
+                pk = pk,
+                force = True)
+
+        return generate_result(path)
+
+
